@@ -7,6 +7,8 @@
 import SwiftUI
 import CoreBluetooth
 import Foundation
+import Combine
+
 
 
 class ImuData: Codable {
@@ -33,6 +35,18 @@ class ImuData: Codable {
     }
 }
 
+struct reqBlk {
+    var id:UInt32
+    var count : UInt16
+    var no: [UInt16]
+    
+    init(){
+        self.id =  AckMark
+        self.count = 0
+        self.no = [UInt16](repeating: 0, count: 32)
+    }
+   
+}
 
 
 struct SpdData {
@@ -104,6 +118,16 @@ let CharIMUUUIDStr = String("cb01e90a-9690-11ee-b9d1-0242ac120002")
 let CharSpdUUID: CBUUID = CBUUID(string:CharSpdUUIDStr)
 let CharImuUUID: CBUUID = CBUUID(string:CharIMUUUIDStr)
 
+
+//let StrtMark : UInt32 = 0x2000
+let InfoMark : UInt32 = 0x1000
+let DataMark : UInt32 = 0x2000
+let AckMark  : UInt32 = 0x4000
+let RsndMark : UInt32 = 0x8000
+
+
+var timerPublisher: Timer.TimerPublisher?
+
 class BluetoothViewModel: NSObject, ObservableObject {
     private var centralManager: CBCentralManager?
     private var peripherals: [CBPeripheral] = []
@@ -116,6 +140,8 @@ class BluetoothViewModel: NSObject, ObservableObject {
     @Published var shot: OneShot = OneShot()
     @Published var shots: [OneShot] = [OneShot]()
     //var myShot : OneShot = OneShot()
+  
+    @State private var cancellables: Set<AnyCancellable> = []
     
     @State var count: Int = 0
     var map = [UInt](repeating: 0, count: 512)
@@ -127,8 +153,7 @@ class BluetoothViewModel: NSObject, ObservableObject {
     var checkf : Bool = true // need check default
     @Published var place : String = ""
     var bulkCount :UInt32 = 32
-    
-    
+    var data: Data = Data()
     
     override init() {
         super.init()
@@ -155,6 +180,7 @@ class BluetoothViewModel: NSObject, ObservableObject {
 }// class BluetoothViewModel
 
 extension BluetoothViewModel: CBCentralManagerDelegate,CBPeripheralDelegate {
+    
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
             self.centralManager?.scanForPeripherals(withServices: nil)
@@ -200,7 +226,7 @@ extension BluetoothViewModel: CBCentralManagerDelegate,CBPeripheralDelegate {
         target?.delegate = self
         self.connected = false
         self.connectState = "Disconnected "
-        
+        print("Disconnect detectee!! ")
         
         
         
@@ -245,45 +271,52 @@ extension BluetoothViewModel: CBCentralManagerDelegate,CBPeripheralDelegate {
     //}
     
     func checkMap(block:UInt32) -> Int {
-        
-        var ret:Int = 0
+        print("checkmap")
         var n:Int = 0
-        struct reqBlk {
-            var id: UInt32 = 0x2000 // AckMark
-            var count: UInt16 = 0
-            var no = [UInt16](repeating: 0, count: 32)
-        }
+        
         var req = reqBlk()
-        let blockNo :UInt = UInt(block & 0x3ff)
+        let blockNo :UInt = UInt(block & 0xfe0)
         
         // check semaphore
-        defer {
-            semT.signal()
-        }
-        semT.wait()
+        //defer {
+        //    semT.signal()
+        //}
+        //semT.wait()
         
-        if (self.checkf) {
-            for i:UInt in 0 ..< 32 {
-                if (self.map[Int(i+blockNo)] == 0) {
-                    req.no[n] = UInt16(blockNo + i)
+        //if (self.checkf) {
+            for i:Int in 0 ..< 32 {
+                if (self.map[Int(blockNo)+i] == 0) {
+                    req.no[n] = UInt16(blockNo + UInt(i) )
                     n += 1
                 }
             }
             if (n > 1) {
-                ret = 0
+                req.id = AckMark
                 req.count = UInt16(n)
-                var data = Data(bytes: &req.id, count: MemoryLayout.size(ofValue: req.id))
+                data = Data(bytes: &req.id, count: MemoryLayout.size(ofValue: req.id))
                 data.append(Data(bytes: &req.count, count: MemoryLayout.size(ofValue: req.count)))
                 for i in 0 ..< 18 {
                     data.append(Data(bytes: &req.no[i], count: MemoryLayout.size(ofValue: req.no[i])))
                 }
                 
-                target?.writeValue(data, for: charIMU!, type: .withoutResponse)
+                //target?.writeValue(data, for: charIMU!, type: .withoutResponse)
+            }else if (n==0){
+                req.count = 0
+                req.id = AckMark
+                data = Data(bytes: &req.id, count: MemoryLayout.size(ofValue: req.id))
+                data.append(Data(bytes: &req.count, count: MemoryLayout.size(ofValue: req.count)))
+                
+                //target?.writeValue(data, for: charIMU!, type: .withoutResponse)
             }
+            print("write resend\(req)")
             self.checkf = false // nop need check
-        }
-        return ret
+        //}
+        print("checkmap out \(n)")
+        return n
     }
+    
+    
+
     
     //func peripheral(_ peripheral: CBPeripheral, didUpdateValueForCharacteristic characteristic: CBCharacteristic,
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic,
@@ -312,9 +345,9 @@ extension BluetoothViewModel: CBCentralManagerDelegate,CBPeripheralDelegate {
             
             var imud:ImuData = ImuData(data: characteristic.value!)
             //print(imud.no)
-            if (imud.no & 0xf000) == 0x4000 {
-                // infomark
-                
+            //print("no:\(imud.no)")
+            if (imud.no & 0xf000) == InfoMark {
+                // strtmark
                 
                 var spdd:SpdData = SpdData(data: characteristic.value!)
                 print("trig:\(spdd.trigger) read:\(spdd.rear) front:\(spdd.front)")
@@ -336,7 +369,6 @@ extension BluetoothViewModel: CBCentralManagerDelegate,CBPeripheralDelegate {
                 
                 
                 
-                
                 //self.dates.append(datestr)
                 
                 
@@ -345,38 +377,45 @@ extension BluetoothViewModel: CBCentralManagerDelegate,CBPeripheralDelegate {
                 //    print("rst: \(self.map[i]) \n")
                 //}
             }
-            if (imud.no & 0xf000) == 0x8000 {
-                //imu Data
+            if (imud.no & 0xf000) == DataMark {
+                
                 var dived: Int = 0
-                dived = Int((imud.no+1) % self.bulkCount) // checking every 32 data
-                imud.no = imud.no % 1000
+                dived = Int((imud.no) % self.bulkCount) // checking every 32 data
+                imud.no = imud.no & 0x3ff
                 //print("bef imud \(imud.no) dived \(dived) self.map[dived] \(self.map[dived])")
                 //if imud.no == 0 {
                 //    self.shot.imudatas = [ImuData]()
                 //}
-                self.map[dived] = 1
-                // print("aft: \(self.map[dived]) \n")
-                var myTimer: Timer = Timer()
+                //print("no:dived\(dived) \(imud.no & 0x3ff)")
+                self.map[Int(imud.no)] = 1
+                //print("aft: \(self.map[dived]) \n")
+                
                 if ( dived == 0 ){ // first block data
                     // start timer
-                    DispatchQueue.global().async {
-                        myTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
-                            var n=self.checkMap(block: imud.no)
-                            if n > 0 {
-                                print("checkMap resend \(n)")
-                            }
-                        }
-                    }
+                    timerPublisher = Timer.publish(every: 2, on: .main, in: .common)
+                    print("start timer")
                 }
-                if (dived == 31) {
-                    // disable timer
-                    myTimer.invalidate()
-                    // block receive done
-                    var n=self.checkMap(block: imud.no)
-                    if n > 0  {
-                        print("checkMap resend \(n)")
+                if (dived == 15) {
+                    // 受信したパケットが32個になったらタイマーを停止
+                    //if imud.no == 32 {
+                    cancellables.forEach { $0.cancel() }
+                    timerPublisher = nil
+                    print("timer stop")
+                    var ret : Int = checkMap(block: imud.no)
+                    print("ret\(ret)")
+                    // ####### Todo CBCharqcteristic を使ったwrite の補法ほう
+                    //peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+                    
+                } else if timerPublisher == nil {
+                    timerPublisher = Timer.publish(every: 2, on: .main, in: .common)
+                    print("timer restyart")
+                    timerPublisher?.autoconnect().sink { _ in
+                        var ret : Int = self.checkMap(block: imud.no)
+                        print("ret\(ret)")
+                        //peripheral.writeValue(self.data, for: characteristic, type: .withoutResponse)
+                    }.store(in: &cancellables)
                     }
-                }
+                //}
                 
                 self.map[dived] = 1
                 self.shot.imudatas.append(imud)
